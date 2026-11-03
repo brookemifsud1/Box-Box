@@ -1,0 +1,185 @@
+
+#------BOX BOX------
+# Here is the set up of the variables needed to track the game progress.
+state = 0            # Controls game phase: 0 = driving into box, 1 = changing tyres, 2 = finished
+step = 0             # Tracks which step of the current wheel you're on (0 to 3)
+wheel = 0            # Tracks which wheel you are on (0 to 3)
+start_time = 0       # Stores the exact game time (in milliseconds) when the pitstop starts
+penalty = 0          # Tracks total extra time added (in ms) for wrong button presses
+wheel_keys: List[number] = []  # Stores the randomised list of button inputs needed for the wheels
+
+# These lists store the names and button labels displayed to the player.
+WHEEL_NAMES = ["FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT"]
+STEP_NAMES = ["GUN OFF", "WHEEL OFF", "NEW WHEEL ON", "GUN ON"]
+KEY_LABELS = ["A", "B", "UP", "DOWN", "LEFT", "RIGHT"]  # Button IDs: 0=A, 1=B, 2=UP, 3=DOWN, 4=LEFT, 5=RIGHT
+
+# Set up the visual assets, background, and initial sprite positions here.
+scene.set_background_image(assets.image("""Pitlane"""))
+
+mySprite = sprites.create(assets.image("""car"""), SpriteKind.player)
+otherSprite = sprites.create(assets.image("""box"""), SpriteKind.enemy)
+
+# Locks the car inside screen boundaries and set spawn positions.
+mySprite.set_stay_in_screen(True)
+otherSprite.set_position(80, 60)
+mySprite.set_position(31, 75)
+mySprite.z = 1  # Ensures my car draws on top of the pitbox box layer
+
+game.splash("BOX BOX", "COMPLETE THE PITSTOP")
+game.splash("DRIVE INTO THE BOX", "TIMER STARTS WHEN YOU STOP")
+controller.move_sprite(mySprite)
+
+# Converts total milliseconds into a human-readable string (e.g., 2340ms -> "2.34s").
+def fmt(ms: number) -> str:
+    hundredths = Math.idiv(ms, 10)
+    whole = Math.idiv(hundredths, 100)
+    frac = hundredths % 100
+    if frac < 10:
+        return str(whole) + ".0" + str(frac) + "s"
+    return str(whole) + "." + str(frac) + "s"
+
+# Generates 4 random direction buttons for the current wheel (repeats allowed).
+def new_wheel_sequence():
+    global wheel_keys
+    wheel_keys = []
+    # Picks a random direction key (2=UP, 3=DOWN, 4=LEFT, 5=RIGHT) 4 times in a row.
+    for i in range(4):
+        wheel_keys.append(randint(2, 5))
+
+# Tells the player what button to hit next.
+def show_prompt():
+    mySprite.say_text(
+        "WHEEL " + str(wheel + 1) + "/4: " + STEP_NAMES[step] +
+        " [" + KEY_LABELS[wheel_keys[step]] + "]"
+    )
+
+# Saving the player's time to storage and building/displaying the top 5 leaderboard.
+def save_and_show(total: number):
+    best: List[number] = []
+    
+    # Looks for saved high scores from local system settings.
+    for i in range(5):
+        key = "b" + str(i)
+        if settings.exists(key):
+            best.append(settings.read_number(key))
+
+    # Find where the current score ranks (lowest time is best).
+    pos = 0
+    while pos < len(best) and best[pos] <= total:
+        pos += 1
+    best.insert_at(pos, total)
+
+    # Trim down the list to ensure only top 5 times are kept.
+    while len(best) > 5:
+        best.pop()
+
+    # Writes the updated leaderboard back into local settings.
+    for i2 in range(len(best)):
+        settings.write_number("b" + str(i2), best[i2])
+
+    # Format's the visual text string to show the player their placement.
+    text = "YOUR TIME: " + fmt(total) + "\n\nLEADERBOARD\n"
+    for i3 in range(len(best)):
+        line = str(i3 + 1) + ". " + fmt(best[i3])
+        if i3 == pos:
+            line += "  <- YOU"
+        text += line + "\n"
+
+    if pos == 0:
+        text += "\nNEW RECORD!"
+
+    # Display the final leaderboard modal screen and restart the game state when dismissed.
+    game.show_long_text(text, DialogLayout.FULL)
+    game.reset()
+
+# Triggers when all 4 wheels are completely changed. Drives the car off screen and opens the score screen.
+def finish():
+    global state
+    state = 2  # Set state to finished to lock button input
+    total = game.runtime() - start_time + penalty  # Calculates total final time in ms
+
+    mySprite.say_text("GO GO GO!")
+    mySprite.set_velocity(100, 0)  # Drive the car out to the right
+
+    # Waits until the car reaches the right side of the screen (or timeout expires)
+    waited = 0
+    while mySprite.x < scene.screen_width() - mySprite.width / 2 and waited < 200:
+        pause(20)
+        waited += 1
+
+    mySprite.set_velocity(0, 0)
+    pause(500)
+    save_and_show(total)
+
+# Core logic for handling button presses during the active pitstop sequence.
+def press(key: number):
+    global step, wheel, penalty
+
+    # Ignore button inputs if the pitstop phase isn't active.
+    if state != 1:
+        return
+
+    # Checks if the player pressed the right button.
+    if key == wheel_keys[step]:
+        step += 1
+        # If completed all 4 steps on the current wheel, move to the next wheel.
+        if step >= len(STEP_NAMES):
+            step = 0
+            wheel += 1
+            # If all 4 wheels are finished, end the pitstop!
+            if wheel >= len(WHEEL_NAMES):
+                finish()
+                return
+            new_wheel_sequence()
+        show_prompt()
+    else:
+        # If the wrong button was pressed, add a 0.5s penalty and shake the screen.
+        penalty += 500
+        scene.camera_shake(3, 200)
+
+# Triggers when the player drives into the target pitbox.
+def on_overlap(sprite, other):
+    global state, start_time
+    if state != 0:
+        return
+
+    state = 1  # Switch game state to pitstop phase
+    controller.move_sprite(mySprite, 0, 0)  # Freezes player movement controls
+    mySprite.set_velocity(0, 0)
+    new_wheel_sequence()
+    game.splash("PITSTOP!", "FOLLOW THE BUTTONS!")
+    start_time = game.runtime()  # Start tracking time right here
+    show_prompt()
+
+sprites.on_overlap(SpriteKind.player, SpriteKind.enemy, on_overlap)
+
+# Controller binding functions to send button key IDs to the press() handler.
+def on_a():
+    press(0)
+controller.A.on_event(ControllerButtonEvent.PRESSED, on_a)
+
+def on_b():
+    press(1)
+controller.B.on_event(ControllerButtonEvent.PRESSED, on_b)
+
+def on_up():
+    press(2)
+controller.up.on_event(ControllerButtonEvent.PRESSED, on_up)
+
+def on_down():
+    press(3)
+controller.down.on_event(ControllerButtonEvent.PRESSED, on_down)
+
+def on_left():
+    press(4)
+controller.left.on_event(ControllerButtonEvent.PRESSED, on_left)
+
+def on_right():
+    press(5)
+controller.right.on_event(ControllerButtonEvent.PRESSED, on_right)
+
+# Updates the score display in the corner every 100ms during the active pitstop.
+def on_tick():
+    if state == 1:
+        info.set_score(Math.idiv(game.runtime() - start_time + penalty, 1000))
+game.on_update_interval(100, on_tick)
